@@ -1,0 +1,74 @@
+import { initializeApp } from 'firebase/app';
+import { getAuth, GoogleAuthProvider } from 'firebase/auth';
+import { getFirestore } from 'firebase/firestore';
+
+// Firebase configuration from environment variables
+const firebaseConfig = {
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+};
+
+// Check if we have all required Firebase config
+const hasValidConfig = Object.values(firebaseConfig).every(value => 
+  value && !value.includes('dummy') && !value.includes('your-')
+);
+
+let app, auth, db, googleProvider;
+
+try {
+  if (hasValidConfig) {
+    // Initialize Firebase with valid config
+    app = initializeApp(firebaseConfig);
+    auth = getAuth(app);
+    db = getFirestore(app);
+    googleProvider = new GoogleAuthProvider();
+  } else {
+    console.warn('Using mock Firebase - please set valid Firebase config in .env file');
+    // Setup mock objects for development without Firebase
+    auth = {
+      onAuthStateChanged: (callback) => {
+        // Simulate a logged in user
+        callback({ uid: 'mock-user-id', email: 'mock@example.com', displayName: 'Mock User' });
+        return () => {}; // Return unsubscribe function
+      },
+      signOut: () => Promise.resolve(),
+      currentUser: { uid: 'mock-user-id', email: 'mock@example.com', displayName: 'Mock User' }
+    };
+    
+    // Mock Firestore
+    db = {
+      collection: () => ({
+        doc: () => ({
+          get: () => Promise.resolve({ exists: () => true, data: () => ({}) }),
+          set: () => Promise.resolve(),
+          update: () => Promise.resolve(),
+        }),
+        add: () => Promise.resolve({ id: 'mock-doc-id' }),
+        where: () => ({ orderBy: () => ({ get: () => Promise.resolve({ docs: [] }) }) }),
+        orderBy: () => ({ get: () => Promise.resolve({ docs: [] }) }),
+      }),
+    };
+    
+    googleProvider = {};
+  }
+} catch (error) {
+  console.error('Firebase initialization error:', error);
+  
+  // Setup fallback mock objects
+  auth = {
+    onAuthStateChanged: (callback) => {
+      callback(null);
+      return () => {};
+    },
+    signOut: () => Promise.resolve(),
+    currentUser: null
+  };
+  db = {};
+  googleProvider = {};
+}
+
+export { auth, db, googleProvider }; 
