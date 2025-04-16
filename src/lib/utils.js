@@ -1,16 +1,28 @@
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
+/**
+ * Combines multiple class names using clsx and twMerge for Tailwind optimization
+ */
 export function cn(...inputs) {
   return twMerge(clsx(inputs));
 }
 
-// Debounce function for real-time auto save
-export function debounce(func, delay) {
-  let timeoutId;
-  return function(...args) {
-    clearTimeout(timeoutId);
-    timeoutId = setTimeout(() => func.apply(this, args), delay);
+/**
+ * Debounce a function to avoid frequent calls
+ * @param {Function} func - The function to debounce
+ * @param {number} wait - The time to wait in milliseconds
+ * @returns {Function} - The debounced function
+ */
+export function debounce(func, wait) {
+  let timeout;
+  return function executedFunction(...args) {
+    const later = () => {
+      clearTimeout(timeout);
+      func(...args);
+    };
+    clearTimeout(timeout);
+    timeout = setTimeout(later, wait);
   };
 }
 

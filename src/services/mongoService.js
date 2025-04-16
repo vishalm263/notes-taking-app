@@ -1,33 +1,13 @@
-// In browser environments, we'll use a mock implementation of MongoDB
-// For actual database operations, use Firebase or the populate-db script
+import { MongoClient, ObjectId } from 'mongodb';
 
-// Check if we're running in a browser
+// Check if we're in browser environment
 const isBrowser = typeof window !== 'undefined';
 
-// MongoDB API endpoint - this should be a serverless function or API endpoint
+// API base URL for browser environment
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
 
-// Database Name
+// Database name
 const dbName = 'notes-app';
-
-// Mock ObjectId class for browser environment
-export class ObjectId {
-  constructor(id) {
-    this.id = id || Math.random().toString(36).substring(2, 15);
-  }
-
-  toString() {
-    return this.id;
-  }
-
-  equals(otherId) {
-    return otherId && this.toString() === otherId.toString();
-  }
-
-  static isValid(id) {
-    return typeof id === 'string' && id.length > 0;
-  }
-}
 
 let dbConnection = null;
 let connectionAttempted = false;
@@ -148,72 +128,83 @@ export async function connectToDatabase() {
             console.error(`Error in deleteOne from ${name}:`, error);
             throw error;
           }
+        },
+        deleteMany: async (filter) => {
+          try {
+            return await apiRequest(`${name}/deleteMany`, 'POST', { filter });
+          } catch (error) {
+            console.error(`Error in deleteMany from ${name}:`, error);
+            throw error;
+          }
         }
       })
     };
     
     connectionAttempted = true;
     return dbConnection;
-  } else {
-    if (dbConnection) return dbConnection;
+  }
+  
+  // Server-side MongoDB connection
+  if (dbConnection) return dbConnection;
+  
+  if (connectionError) {
+    console.warn('Returning mock implementation due to previous connection error');
+    return {
+      collection: (name) => ({
+        findOne: () => Promise.resolve({}),
+        find: () => Promise.resolve([]),
+        insertOne: () => Promise.resolve({ insertedId: new ObjectId() }),
+        updateOne: () => Promise.resolve({ modifiedCount: 1 }),
+        deleteOne: () => Promise.resolve({ deletedCount: 1 }),
+        deleteMany: () => Promise.resolve({ deletedCount: 1 })
+      })
+    };
+  }
+  
+  try {
+    // Only import MongoClient in Node.js environment
+    const url = process.env.VITE_MONGODB_URI || import.meta.env.VITE_MONGODB_URI;
     
-    if (connectionError) {
-      console.warn('Returning mock implementation due to previous connection error');
+    if (!url || url === 'your-mongodb-uri') {
+      console.warn('MongoDB URI not provided, using mock implementation');
+      connectionError = new Error('MongoDB URI not provided');
       return {
         collection: (name) => ({
           findOne: () => Promise.resolve({}),
           find: () => Promise.resolve([]),
           insertOne: () => Promise.resolve({ insertedId: new ObjectId() }),
           updateOne: () => Promise.resolve({ modifiedCount: 1 }),
-          deleteOne: () => Promise.resolve({ deletedCount: 1 })
+          deleteOne: () => Promise.resolve({ deletedCount: 1 }),
+          deleteMany: () => Promise.resolve({ deletedCount: 1 })
         })
       };
     }
     
-    try {
-      // Only import MongoClient in Node.js environment
-      const { MongoClient } = await import('mongodb');
-      const url = process.env.VITE_MONGODB_URI || import.meta.env.VITE_MONGODB_URI;
-      
-      if (!url || url === 'your-mongodb-uri') {
-        console.warn('MongoDB URI not provided, using mock implementation');
-        connectionError = new Error('MongoDB URI not provided');
-        return {
-          collection: (name) => ({
-            findOne: () => Promise.resolve({}),
-            find: () => Promise.resolve([]),
-            insertOne: () => Promise.resolve({ insertedId: new ObjectId() }),
-            updateOne: () => Promise.resolve({ modifiedCount: 1 }),
-            deleteOne: () => Promise.resolve({ deletedCount: 1 })
-          })
-        };
-      }
-      
-      const client = new MongoClient(url);
-      
-      // Connect to the MongoDB server
-      await client.connect();
-      console.log('Connected successfully to MongoDB server');
-      
-      // Select the database
-      dbConnection = client.db(dbName);
-      connectionAttempted = true;
-      return dbConnection;
-    } catch (error) {
-      console.error('Failed to connect to MongoDB:', error);
-      connectionError = error;
-      
-      // Fallback to mock implementation
-      return {
-        collection: (name) => ({
-          findOne: () => Promise.resolve({}),
-          find: () => Promise.resolve([]),
-          insertOne: () => Promise.resolve({ insertedId: new ObjectId() }),
-          updateOne: () => Promise.resolve({ modifiedCount: 1 }),
-          deleteOne: () => Promise.resolve({ deletedCount: 1 })
-        })
-      };
-    }
+    const client = new MongoClient(url);
+    
+    // Connect to the MongoDB server
+    await client.connect();
+    console.log('Connected successfully to MongoDB server');
+    
+    // Select the database
+    dbConnection = client.db(dbName);
+    connectionAttempted = true;
+    return dbConnection;
+  } catch (error) {
+    console.error('Failed to connect to MongoDB:', error);
+    connectionError = error;
+    
+    // Fallback to mock implementation
+    return {
+      collection: (name) => ({
+        findOne: () => Promise.resolve({}),
+        find: () => Promise.resolve([]),
+        insertOne: () => Promise.resolve({ insertedId: new ObjectId() }),
+        updateOne: () => Promise.resolve({ modifiedCount: 1 }),
+        deleteOne: () => Promise.resolve({ deletedCount: 1 }),
+        deleteMany: () => Promise.resolve({ deletedCount: 1 })
+      })
+    };
   }
 }
 
@@ -229,7 +220,8 @@ export async function getCollection(collectionName) {
       find: () => Promise.resolve([]),
       insertOne: () => Promise.resolve({ insertedId: new ObjectId() }),
       updateOne: () => Promise.resolve({ modifiedCount: 1 }),
-      deleteOne: () => Promise.resolve({ deletedCount: 1 })
+      deleteOne: () => Promise.resolve({ deletedCount: 1 }),
+      deleteMany: () => Promise.resolve({ deletedCount: 1 })
     };
   }
 }
@@ -254,92 +246,44 @@ export async function closeConnection() {
   }
 }
 
-// User operations 
+// Synchronize user data with MongoDB
 export async function createOrUpdateUser(userData) {
-  if (!userData || !userData.firebaseId) {
-    console.error('Cannot create/update user: Invalid user data or missing Firebase ID');
-    throw new Error('Firebase ID is required for user creation/update');
-  }
-  
-  console.log('Creating/updating user in MongoDB:', userData);
-  
-  // For direct server communication
-  if (isBrowser) {
-    try {
-      // Use the API endpoint to create/update user
-      const result = await apiRequest('users/syncUser', 'POST', userData);
-      console.log('User synced with MongoDB through API. MongoDB ID:', result.id);
-      return result;
-    } catch (error) {
-      console.error('Failed to sync user with MongoDB through API:', error);
-      // Still return minimal data to prevent auth flow breaking
-      return { id: userData.firebaseId, ...userData };
-    }
-  }
-  
-  // Server-side code
-  let usersCol;
-  
-  try {
-    usersCol = await getCollection('users');
-  } catch (error) {
-    console.error('Failed to get users collection:', error);
-    // Return a minimal successful response to prevent auth flow from breaking
-    return { id: userData.firebaseId, ...userData };
+  if (!userData || !userData.uid) {
+    throw new Error('Invalid user data');
   }
   
   try {
-    // Check if user already exists - using firebaseId as the unique identifier
-    const existingUser = await usersCol.findOne({ firebaseId: userData.firebaseId });
+    const usersCol = await getCollection('users');
+    
+    // Check if user already exists
+    const existingUser = await usersCol.findOne({ uid: userData.uid });
     
     if (existingUser) {
-      console.log('Updating existing user in MongoDB. Firebase ID:', userData.firebaseId);
       // Update existing user
       await usersCol.updateOne(
-        { firebaseId: userData.firebaseId },
+        { uid: userData.uid },
         { 
           $set: { 
             ...userData,
-            updatedAt: new Date()
+            lastLogin: new Date()
           } 
         }
       );
-      return { 
-        id: existingUser._id.toString(), 
-        firebaseId: userData.firebaseId,
-        ...existingUser, 
-        ...userData 
-      };
+      return { ...existingUser, ...userData, lastLogin: new Date() };
     } else {
-      console.log('Creating new user in MongoDB with Firebase ID:', userData.firebaseId);
-      // Create new user, explicitly including the Firebase ID
+      // Create new user
       const newUser = {
-        firebaseId: userData.firebaseId, // Ensure this is always stored
-        email: userData.email,
-        displayName: userData.displayName || '',
-        photoURL: userData.photoURL || '',
-        provider: userData.provider || 'password',
+        ...userData,
         createdAt: new Date(),
-        updatedAt: new Date()
+        lastLogin: new Date()
       };
       
       const result = await usersCol.insertOne(newUser);
-      
-      // Add the MongoDB-generated ID to the returned object
-      const returnedUser = { 
-        ...newUser,
-        id: result.insertedId?.toString() || userData.firebaseId 
-      };
-      
-      console.log('User created with MongoDB ID:', returnedUser.id);
-      console.log('Linked to Firebase ID:', userData.firebaseId);
-      
-      return returnedUser;
+      return { _id: result.insertedId, ...newUser };
     }
   } catch (error) {
     console.error('Error in createOrUpdateUser:', error);
-    // Return a minimal successful response to prevent auth flow from breaking
-    return { id: userData.firebaseId, ...userData };
+    throw error;
   }
 }
 
@@ -350,10 +294,13 @@ if (isBrowser) {
   });
 }
 
+export { ObjectId };
+
 export default {
   connectToDatabase,
   getCollection,
   closeConnection,
   createOrUpdateUser,
-  apiRequest
+  apiRequest,
+  ObjectId
 }; 

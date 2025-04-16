@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+
 import { Button } from '../components/ui/button';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -8,9 +9,10 @@ const LoginPage = () => {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [useRedirectAuth, setUseRedirectAuth] = useState(false);
   const navigate = useNavigate();
   
-  const { login, loginWithGoogle } = useAuth();
+  const { login, loginWithGoogle, loginWithGoogleRedirect } = useAuth();
   
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -36,11 +38,36 @@ const LoginPage = () => {
     try {
       setError('');
       setLoading(true);
+      
+      // Use redirect method if previous popup attempt failed
+      if (useRedirectAuth) {
+        console.log('Using redirect authentication method');
+        await loginWithGoogleRedirect();
+        // Note: The page will redirect and this function won't continue
+        return;
+      }
+      
+      // Otherwise use popup method
       await loginWithGoogle();
       navigate('/notes');
     } catch (error) {
       console.error('Google login error:', error);
-      setError('Failed to log in with Google: ' + (error.message || 'Please try again'));
+      
+      // Provide more user-friendly error message for popup closed
+      if (error.message && error.message.includes('canceled')) {
+        // We don't show an error for user-canceled operations
+        console.log('User canceled the Google sign-in process');
+        setError(''); 
+      } else if (error.code === 'auth/popup-blocked') {
+        setError('Sign-in popup was blocked. Please allow popups for this site and try again.');
+      } else if (error.message && error.message.includes('Cross-Origin-Opener-Policy') || 
+                 error.message && error.message.includes('Try using Google Redirect')) {
+        // Switch to redirect auth
+        setError('Switching to redirect authentication method. Please click the Google button again.');
+        setUseRedirectAuth(true);
+      } else {
+        setError('Failed to log in with Google: ' + (error.message || 'Please try again'));
+      }
     } finally {
       setLoading(false);
     }

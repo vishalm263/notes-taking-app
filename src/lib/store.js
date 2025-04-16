@@ -15,10 +15,34 @@ export const useNoteStore = create(
       
       // Note actions
       setNotes: (notes) => set({ notes }),
-      setActiveNote: (noteId) => {
-        const notes = get().notes;
-        const activeNote = notes.find(note => note.id === noteId) || null;
-        set({ activeNote });
+      setActiveNote: (noteOrId) => {
+        // If noteOrId is a string, find the note in the store
+        if (typeof noteOrId === 'string') {
+          const notes = get().notes;
+          const activeNote = notes.find(note => note.id === noteOrId) || null;
+          set({ activeNote });
+        } 
+        // If noteOrId is an object (a note), set it directly
+        else if (noteOrId && typeof noteOrId === 'object') {
+          // Also update the note in the notes array if it exists
+          const notes = get().notes;
+          const existingNoteIndex = notes.findIndex(note => note.id === noteOrId.id);
+          
+          if (existingNoteIndex !== -1) {
+            // Update existing note in the array
+            notes[existingNoteIndex] = noteOrId;
+            set({ 
+              notes: [...notes],
+              activeNote: noteOrId
+            });
+          } else {
+            // Just set the active note without updating the array
+            set({ activeNote: noteOrId });
+          }
+        } else {
+          // If noteOrId is null or undefined, clear activeNote
+          set({ activeNote: null });
+        }
       },
       updateActiveNote: (updates) => {
         const activeNote = get().activeNote;

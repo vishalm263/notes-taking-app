@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, setPersistence, browserLocalPersistence } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 
 // Firebase configuration from environment variables
@@ -22,14 +22,32 @@ let app, auth, db, googleProvider;
 try {
   if (hasValidConfig) {
     // Initialize Firebase with valid config
+    console.log('Initializing Firebase with valid configuration');
     app = initializeApp(firebaseConfig);
     auth = getAuth(app);
+    
+    // Set session persistence to local (survives browser restarts)
+    setPersistence(auth, browserLocalPersistence)
+      .then(() => console.log('Firebase persistence set to local'))
+      .catch(error => console.error('Firebase persistence error:', error));
+    
     db = getFirestore(app);
     googleProvider = new GoogleAuthProvider();
+    
+    // Configure Google auth provider to improve popup handling
+    googleProvider.setCustomParameters({
+      // Allow selecting account on every login
+      prompt: 'select_account',
+      // Popup display mode
+      display: 'popup',
+      // Try to avoid CORS issues
+      redirect_uri: window.location.origin
+    });
   } else {
     console.warn('Using mock Firebase - please set valid Firebase config in .env file');
     // Setup mock objects for development without Firebase
     auth = {
+      app: null, // This will trigger mock mode
       onAuthStateChanged: (callback) => {
         // Simulate a logged in user
         callback({ uid: 'mock-user-id', email: 'mock@example.com', displayName: 'Mock User' });
@@ -60,6 +78,7 @@ try {
   
   // Setup fallback mock objects
   auth = {
+    app: null, // This will trigger mock mode
     onAuthStateChanged: (callback) => {
       callback(null);
       return () => {};

@@ -10,8 +10,10 @@ import {
   query, 
   where, 
   orderBy, 
-  serverTimestamp 
+  serverTimestamp,
+  setDoc
 } from 'firebase/firestore';
+import { auth } from '../lib/firebase';
 
 // Import MongoDB services
 import * as mongoService from '../lib/mongodb';
@@ -120,228 +122,428 @@ const mockData = {
   ]
 };
 
+// Custom error classes for better error handling
+class NoteServiceError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'NoteServiceError';
+  }
+}
+
+class NotFoundError extends NoteServiceError {
+  constructor(id) {
+    super(`Note with ID ${id} not found`);
+    this.name = 'NotFoundError';
+    this.statusCode = 404;
+  }
+}
+
+class AuthorizationError extends NoteServiceError {
+  constructor() {
+    super('You do not have permission to access this note');
+    this.name = 'AuthorizationError';
+    this.statusCode = 403;
+  }
+}
+
+class NetworkError extends NoteServiceError {
+  constructor(originalError) {
+    super('Network error occurred while connecting to the server');
+    this.name = 'NetworkError';
+    this.originalError = originalError;
+    this.statusCode = 0;
+  }
+}
+
 // Notes CRUD operations
 export async function createNote(noteData, userId) {
-  // Use MongoDB if configured
-  if (useMongoDb) {
-    const notesCol = await mongoService.getCollection(notesCollection);
+  try {
+    if (!userId) {
+      throw new NoteServiceError('User ID is required to create a note');
+    }
     
-    const noteWithMetadata = {
-      ...noteData,
-      userId,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      isPinned: false,
-      isArchived: false
-    };
-    
-    const result = await notesCol.insertOne(noteWithMetadata);
-    
-    // Create initial version
-    const versionsCol = await mongoService.getCollection(versionsCollection);
-    await versionsCol.insertOne({
-      noteId: result.insertedId.toString(),
-      content: noteData.content,
-      createdAt: new Date(),
-      changeDescription: 'Initial version'
-    });
-    
-    return { id: result.insertedId.toString(), ...noteWithMetadata };
-  }
-  
-  // Use mock data if in mock mode
-  if (isMockMode) {
+    const timestamp = new Date().toISOString();
     const newNote = {
       ...noteData,
-      id: `note-${Date.now()}`,
       userId,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      versions: [{
+        content: noteData.content,
+        timestamp,
+        versionNumber: 1
+      }]
+    };
+    
+    // Use MongoDB if configured
+    if (useMongoDb) {
+      const notesCol = await mongoService.getCollection(notesCollection);
+      
+      const noteWithMetadata = {
+        ...newNote,
+        isPinned: false,
+        isArchived: false
+      };
+      
+      const result = await notesCol.insertOne(noteWithMetadata);
+      
+      // Create initial version
+      const versionsCol = await mongoService.getCollection(versionsCollection);
+      await versionsCol.insertOne({
+        noteId: result.insertedId.toString(),
+        content: noteData.content,
+        createdAt: new Date(),
+        changeDescription: 'Initial version'
+      });
+      
+      return { id: result.insertedId.toString(), ...noteWithMetadata };
+    }
+    
+    // Use mock data if in mock mode
+    if (isMockMode) {
+      const createdNote = {
+        ...newNote,
+        id: `note-${Date.now()}`,
+      };
+      
+      mockData.notes.push(createdNote);
+      
+      // Create initial version
+      mockData.versions.push({
+        id: `version-${Date.now()}`,
+        noteId: createdNote.id,
+        content: noteData.content,
+        createdAt: new Date().toISOString(),
+        changeDescription: 'Initial version'
+      });
+      
+      return createdNote;
+    }
+    
+    // Use Firebase if neither MongoDB nor mock mode
+    const noteWithMetadata = {
+      ...newNote,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
       isPinned: false,
       isArchived: false,
     };
     
-    mockData.notes.push(newNote);
+    const docRef = await addDoc(collection(db, notesCollection), noteWithMetadata);
     
     // Create initial version
-    mockData.versions.push({
-      id: `version-${Date.now()}`,
-      noteId: newNote.id,
+    await addDoc(collection(db, versionsCollection), {
+      noteId: docRef.id,
       content: noteData.content,
-      createdAt: new Date().toISOString(),
+      createdAt: serverTimestamp(),
       changeDescription: 'Initial version'
     });
     
-    return newNote;
+    return { id: docRef.id, ...noteWithMetadata };
+  } catch (error) {
+    if (error instanceof NoteServiceError) {
+      throw error;
+    }
+    
+    if (error.name === 'AbortError' || error.code === 'unavailable') {
+      throw new NetworkError(error);
+    }
+    
+    console.error('Error in createNote:', error);
+    throw new NoteServiceError(`Failed to create note: ${error.message}`);
   }
-  
-  // Use Firebase if neither MongoDB nor mock mode
-  const noteWithMetadata = {
-    ...noteData,
-    userId,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-    isPinned: false,
-    isArchived: false,
-  };
-  
-  const docRef = await addDoc(collection(db, notesCollection), noteWithMetadata);
-  
-  // Create initial version
-  await addDoc(collection(db, versionsCollection), {
-    noteId: docRef.id,
-    content: noteData.content,
-    createdAt: serverTimestamp(),
-    changeDescription: 'Initial version'
-  });
-  
-  return { id: docRef.id, ...noteWithMetadata };
 }
 
 export async function updateNote(noteId, updateData) {
-  // Use MongoDB if configured
-  if (useMongoDb) {
-    const notesCol = await mongoService.getCollection(notesCollection);
-    
-    // Get the current note
-    const query = { _id: isBrowser ? { toString: () => noteId } : new ObjectId(noteId) };
-    const currentNote = await notesCol.findOne(query);
+  try {
+    // Get the current note first to make sure it exists and for version history
+    const currentNote = await getNoteById(noteId);
     
     if (!currentNote) {
-      throw new Error('Note not found');
+      throw new NotFoundError(noteId);
     }
     
-    // Save version history if content changed
-    if (updateData.content && updateData.content !== currentNote.content) {
-      const versionsCol = await mongoService.getCollection(versionsCollection);
-      await versionsCol.insertOne({
-        noteId,
-        content: updateData.content,
-        createdAt: new Date(),
-        changeDescription: updateData.changeDescription || 'Updated note'
-      });
-    }
-    
-    // Update the note
-    const result = await notesCol.updateOne(
-      query,
-      { 
-        $set: { 
-          ...updateData,
-          updatedAt: new Date()
-        } 
-      }
-    );
-    
-    if (result.modifiedCount === 0) {
-      throw new Error('Failed to update note');
-    }
-    
-    return { id: noteId, ...updateData };
-  }
-  
-  // Use mock data if in mock mode
-  if (isMockMode) {
-    const noteIndex = mockData.notes.findIndex(note => note.id === noteId);
-    
-    if (noteIndex === -1) {
-      throw new Error('Note not found');
-    }
-    
-    const currentNote = mockData.notes[noteIndex];
-    
-    // Only save version history if content changed
-    if (updateData.content && updateData.content !== currentNote.content) {
-      mockData.versions.push({
-        id: `version-${Date.now()}`,
-        noteId,
-        content: updateData.content,
-        createdAt: new Date().toISOString(),
-        changeDescription: updateData.changeDescription || 'Updated note'
-      });
-    }
-    
-    const updatedNote = {
+    const timestamp = new Date().toISOString();
+    let updatedNote = {
       ...currentNote,
       ...updateData,
-      updatedAt: new Date().toISOString()
+      updatedAt: timestamp
     };
     
-    mockData.notes[noteIndex] = updatedNote;
-    return updatedNote;
+    // If content is being updated, add to version history
+    if (updateData.content) {
+      // Get the current versions or initialize if missing
+      const versions = currentNote.versions || [];
+      const versionNumber = versions.length + 1;
+      
+      updatedNote.versions = [
+        ...versions,
+        {
+          content: updateData.content,
+          timestamp,
+          versionNumber
+        }
+      ];
+      
+      // Keep only the most recent 10 versions
+      if (updatedNote.versions.length > 10) {
+        updatedNote.versions = updatedNote.versions.slice(-10);
+      }
+    }
+    
+    // Use MongoDB if configured
+    if (useMongoDb) {
+      const notesCol = await mongoService.getCollection(notesCollection);
+      
+      // Save version history if content changed
+      if (updateData.content && updateData.content !== currentNote.content) {
+        const versionsCol = await mongoService.getCollection(versionsCollection);
+        await versionsCol.insertOne({
+          noteId,
+          content: updateData.content,
+          createdAt: new Date(),
+          changeDescription: updateData.changeDescription || 'Updated note'
+        });
+      }
+      
+      // Update the note
+      const result = await notesCol.updateOne(
+        { _id: isBrowser ? { toString: () => noteId } : new ObjectId(noteId) },
+        { 
+          $set: { 
+            ...updatedNote,
+            updatedAt: new Date()
+          } 
+        }
+      );
+      
+      if (result.modifiedCount === 0) {
+        console.warn(`Note ${noteId} not modified. Data may be unchanged or update failed.`);
+      }
+      
+      return { id: noteId, ...updatedNote };
+    }
+    
+    // Use mock data if in mock mode
+    if (isMockMode) {
+      const noteIndex = mockData.notes.findIndex(note => note.id === noteId);
+      
+      // Only save version history if content changed
+      if (updateData.content && updateData.content !== currentNote.content) {
+        mockData.versions.push({
+          id: `version-${Date.now()}`,
+          noteId,
+          content: updateData.content,
+          createdAt: new Date().toISOString(),
+          changeDescription: updateData.changeDescription || 'Updated note'
+        });
+      }
+      
+      const updatedNote = {
+        ...currentNote,
+        ...updatedNote,
+        updatedAt: new Date().toISOString()
+      };
+      
+      mockData.notes[noteIndex] = updatedNote;
+      return updatedNote;
+    }
+    
+    // Use Firebase if neither MongoDB nor mock mode
+    const noteRef = doc(db, notesCollection, noteId);
+    
+    try {
+      // Only save version history if content changed
+      if (updateData.content && updateData.content !== currentNote.content) {
+        await addDoc(collection(db, versionsCollection), {
+          noteId,
+          content: updateData.content,
+          createdAt: serverTimestamp(),
+          changeDescription: updateData.changeDescription || 'Updated note'
+        });
+      }
+      
+      const updates = {
+        ...updatedNote,
+        updatedAt: serverTimestamp()
+      };
+      
+      await updateDoc(noteRef, updates);
+      return { id: noteId, ...updates };
+    } catch (error) {
+      console.error(`Error updating note in Firebase: ${error.message}`);
+      throw error;
+    }
+  } catch (error) {
+    if (error instanceof NoteServiceError) {
+      throw error;
+    }
+    
+    if (error.code === 'permission-denied') {
+      throw new AuthorizationError();
+    }
+    
+    if (error.name === 'AbortError' || error.code === 'unavailable') {
+      throw new NetworkError(error);
+    }
+    
+    console.error(`Error in updateNote: ${error.message}`);
+    throw error;
   }
-  
-  // Use Firebase if neither MongoDB nor mock mode
-  const noteRef = doc(db, notesCollection, noteId);
-  const noteDoc = await getDoc(noteRef);
-  
-  if (!noteDoc.exists()) {
-    throw new Error('Note not found');
-  }
-  
-  // Only save version history if content changed
-  if (updateData.content && updateData.content !== noteDoc.data().content) {
-    await addDoc(collection(db, versionsCollection), {
-      noteId,
-      content: updateData.content,
-      createdAt: serverTimestamp(),
-      changeDescription: updateData.changeDescription || 'Updated note'
-    });
-  }
-  
-  const updates = {
-    ...updateData,
-    updatedAt: serverTimestamp()
-  };
-  
-  await updateDoc(noteRef, updates);
-  return { id: noteId, ...updates };
 }
 
 export async function deleteNote(noteId) {
   // Use MongoDB if configured
   if (useMongoDb) {
-    const notesCol = await mongoService.getCollection(notesCollection);
-    const query = { _id: isBrowser ? { toString: () => noteId } : new ObjectId(noteId) };
-    
-    const result = await notesCol.deleteOne(query);
-    
-    if (result.deletedCount === 0) {
-      throw new Error('Note not found');
+    try {
+      if (!noteId) {
+        throw new NotFoundError('invalid-id');
+      }
+      
+      const notesCol = await mongoService.getCollection(notesCollection);
+      
+      // Try multiple query approaches to ensure we find the note
+      let result;
+      
+      // Try with string ID first
+      try {
+        result = await notesCol.deleteOne({ _id: noteId });
+      } catch (error) {
+        console.log('Failed to delete note with string ID, trying with ObjectId', error);
+      }
+      
+      // If that didn't work, try with ObjectId
+      if (!result || result.deletedCount === 0) {
+        try {
+          const query = { _id: isBrowser ? { toString: () => noteId } : new ObjectId(noteId) };
+          result = await notesCol.deleteOne(query);
+        } catch (error) {
+          console.log('Failed to delete note with ObjectId', error);
+        }
+      }
+      
+      // If still no luck, try finding by noteId field
+      if (!result || result.deletedCount === 0) {
+        result = await notesCol.deleteOne({ noteId: noteId });
+      }
+      
+      // If we still couldn't delete anything, throw an error
+      if (!result || result.deletedCount === 0) {
+        console.error(`Failed to delete note with ID ${noteId}, note not found`);
+        throw new NotFoundError(noteId);
+      }
+      
+      console.log(`Successfully deleted note with ID ${noteId}`);
+      
+      // Delete associated versions
+      const versionsCol = await mongoService.getCollection(versionsCollection);
+      await versionsCol.deleteMany({ noteId });
+      
+      return { success: true };
+    } catch (error) {
+      console.error('Error in deleteNote:', error);
+      
+      // Convert generic errors to NotFoundError if appropriate
+      if (error.message === 'Note not found' || error.message.includes('not found')) {
+        throw new NotFoundError(noteId);
+      }
+      
+      throw error;
     }
-    
-    // Delete associated versions
-    const versionsCol = await mongoService.getCollection(versionsCollection);
-    await versionsCol.deleteMany({ noteId });
-    
-    return { success: true };
   }
   
   // Use mock data if in mock mode
   if (isMockMode) {
+    const originalLength = mockData.notes.length;
     mockData.notes = mockData.notes.filter(note => note.id !== noteId);
+    
+    if (mockData.notes.length === originalLength) {
+      throw new NotFoundError(noteId);
+    }
+    
     mockData.versions = mockData.versions.filter(version => version.noteId !== noteId);
     return { success: true };
   }
   
   // Use Firebase if neither MongoDB nor mock mode
-  await deleteDoc(doc(db, notesCollection, noteId));
-  return { success: true };
+  try {
+    await deleteDoc(doc(db, notesCollection, noteId));
+    return { success: true };
+  } catch (error) {
+    console.error('Error deleting Firebase note:', error);
+    
+    // Convert generic errors to NotFoundError if appropriate
+    if (error.code === 'not-found' || error.message.includes('not found')) {
+      throw new NotFoundError(noteId);
+    }
+    
+    throw error;
+  }
 }
 
 export async function getNoteById(noteId) {
   // Use MongoDB if configured
   if (useMongoDb) {
-    const notesCol = await mongoService.getCollection(notesCollection);
-    const query = { _id: isBrowser ? { toString: () => noteId } : new ObjectId(noteId) };
-    
-    const note = await notesCol.findOne(query);
-    
-    if (!note) {
-      throw new Error('Note not found');
+    try {
+      if (!noteId) {
+        console.error('Invalid noteId: noteId is undefined or null');
+        throw new NotFoundError('invalid-id');
+      }
+      
+      console.log("Attempting to retrieve note with ID:", noteId);
+      
+      const notesCol = await mongoService.getCollection(notesCollection);
+      
+      // First try with the string ID as-is
+      let note;
+      
+      try {
+        // Try to find by string ID first
+        console.log("Trying to find by string ID:", noteId);
+        note = await notesCol.findOne({ _id: noteId });
+      } catch (error) {
+        console.log('Failed to find note with string ID, trying with ObjectId', error);
+      }
+      
+      // If not found, try with ObjectId
+      if (!note) {
+        try {
+          // Create a proper ObjectId or use a toString object for browser
+          console.log("Trying with ObjectId:", noteId);
+          const query = { _id: isBrowser ? { toString: () => noteId } : new ObjectId(noteId) };
+          note = await notesCol.findOne(query);
+        } catch (error) {
+          console.log('Failed to find note with ObjectId', error);
+        }
+      }
+      
+      // If still not found, try to find by plain ID field
+      if (!note) {
+        try {
+          console.log("Trying to find by id field:", noteId);
+          note = await notesCol.findOne({ id: noteId });
+        } catch (error) {
+          console.log('Failed to find note with id field', error);
+        }
+      }
+      
+      if (!note) {
+        console.log(`Note not found in MongoDB: ${noteId}`);
+        throw new NotFoundError(noteId);
+      }
+      
+      console.log('Found note:', noteId);
+      return { id: note._id.toString(), ...note };
+    } catch (error) {
+      console.error('Error in getNoteById:', error);
+      
+      // Convert generic errors to NotFoundError if appropriate
+      if (error.message === 'Note not found' || error.message.includes('not found')) {
+        throw new NotFoundError(noteId);
+      }
+      
+      throw error;
     }
-    
-    return { id: note._id.toString(), ...note };
   }
   
   // Use mock data if in mock mode
@@ -349,20 +551,33 @@ export async function getNoteById(noteId) {
     const note = mockData.notes.find(note => note.id === noteId);
     
     if (!note) {
-      throw new Error('Note not found');
+      console.log(`Note not found in mock data: ${noteId}`);
+      throw new NotFoundError(noteId);
     }
     
     return note;
   }
   
   // Use Firebase if neither MongoDB nor mock mode
-  const noteDoc = await getDoc(doc(db, notesCollection, noteId));
-  
-  if (!noteDoc.exists()) {
-    throw new Error('Note not found');
+  try {
+    const noteDoc = await getDoc(doc(db, notesCollection, noteId));
+    
+    if (!noteDoc.exists()) {
+      console.log(`Note not found in Firebase: ${noteId}`);
+      throw new NotFoundError(noteId);
+    }
+    
+    return { id: noteDoc.id, ...noteDoc.data() };
+  } catch (error) {
+    console.error('Error in Firebase getDoc:', error);
+    
+    // Convert generic errors to NotFoundError if appropriate
+    if (error.message === 'Note not found' || error.message.includes('not found') || !error.code) {
+      throw new NotFoundError(noteId);
+    }
+    
+    throw error;
   }
-  
-  return { id: noteDoc.id, ...noteDoc.data() };
 }
 
 export async function getNotesByUser(userId, filters = {}) {

@@ -2,6 +2,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from './components/ThemeProvider';
 import { AuthProvider } from './contexts/AuthContext';
+import { Toaster } from './components/ui/use-toast';
 
 // Layout
 import Layout from './components/layout/Layout';
@@ -11,6 +12,7 @@ import HomePage from './pages/HomePage';
 import NotePage from './pages/NotePage';
 import LoginPage from './pages/LoginPage';
 import SignupPage from './pages/SignupPage';
+import ProfilePage from './pages/ProfilePage';
 
 // Create a client
 const queryClient = new QueryClient();
@@ -40,9 +42,11 @@ function App() {
                 <Route index element={<ResponsiveRedirect />} />
                 <Route path="notes" element={<HomePage />} />
                 <Route path="notes/:noteId" element={<NotePage />} />
+                <Route path="profile" element={<ProfilePage />} />
               </Route>
             </Routes>
           </Router>
+          <Toaster />
         </AuthProvider>
       </ThemeProvider>
     </QueryClientProvider>

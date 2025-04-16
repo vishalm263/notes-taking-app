@@ -8,7 +8,8 @@ import { PlusCircle, Search, X } from 'lucide-react';
 
 const HomePage = () => {
   const navigate = useNavigate();
-  const { currentUser } = useAuth();
+  const auth = useAuth() || {};
+  const { currentUser } = auth;
   const [searchTerm, setSearchTerm] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   

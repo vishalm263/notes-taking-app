@@ -15,5 +15,20 @@ export default defineConfig({
     rollupOptions: {
       external: ['mongodb']
     }
+  },
+  server: {
+    headers: {
+      // Set relaxed COOP header for Firebase auth popups
+      'Cross-Origin-Opener-Policy': 'same-origin-allow-popups',
+      // Set COEP header
+      'Cross-Origin-Embedder-Policy': 'credentialless',
+    },
+    proxy: {
+      '/api': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+        secure: false,
+      }
+    }
   }
 })

@@ -71,7 +71,15 @@ const NoteList = () => {
           <p className="text-sm">Create a new note to get started</p>
           <Button 
             className="mt-4"
-            onClick={() => navigate('/notes/new')}
+            onClick={() => {
+              // Pass the current section ID if we're in a section view
+              const sectionId = activeFilter.sectionId;
+              if (sectionId) {
+                navigate(`/notes/new?sectionId=${sectionId}`);
+              } else {
+                navigate('/notes/new');
+              }
+            }}
           >
             Create Note
           </Button>
