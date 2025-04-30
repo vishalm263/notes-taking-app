@@ -25,7 +25,7 @@ A full-featured notes application built with React, Firebase, and TipTap/ProseMi
 
 1. Clone the repository:
    ```bash
-   git clone <repository-url>
+   git clone <https://github.com/vishalm263/notes-taking-app.git>
    cd notes-taking-app
    ```
 
@@ -69,7 +69,3 @@ src/
 ├── services/         # API and service functions
 └── styles/           # Global styles
 ```
-
-## License
-
-MIT
